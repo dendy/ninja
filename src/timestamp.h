@@ -19,6 +19,6 @@
 // them against one another -- we never convert them to an absolute
 // real time.  On POSIX we use time_t (seconds since epoch) and on
 // Windows we use a different value.  Both fit in an int.
-typedef int TimeStamp;
+typedef long long int TimeStamp;
 
 #endif  // NINJA_TIMESTAMP_H_

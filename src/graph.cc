@@ -176,10 +176,10 @@ bool DependencyScan::RecomputeOutputDirty(Edge* edge,
 
     if (output_mtime < most_recent_input->mtime()) {
       EXPLAIN("%soutput %s older than most recent input %s "
-              "(%d vs %d)",
+              "(%lld vs %lld)",
               used_restat ? "restat of " : "", output->path().c_str(),
               most_recent_input->path().c_str(),
-              output_mtime, most_recent_input->mtime());
+              static_cast<long long int>(output_mtime), static_cast<long long int>(most_recent_input->mtime()));
       return true;
     }
   }
@@ -363,9 +363,9 @@ string Node::PathDecanonicalized(const string& path, unsigned int slash_bits) {
 }
 
 void Node::Dump(const char* prefix) const {
-  printf("%s <%s 0x%p> mtime: %d%s, (:%s), ",
+  printf("%s <%s 0x%p> mtime: %lld%s, (:%s), ",
          prefix, path().c_str(), this,
-         mtime(), mtime() ? "" : " (:missing)",
+         static_cast<long long int>(mtime()), mtime() ? "" : " (:missing)",
          dirty() ? " dirty" : " clean");
   if (in_edge()) {
     in_edge()->Dump("in-edge: ");
@@ -460,8 +460,8 @@ bool ImplicitDepLoader::LoadDepsFromLog(Edge* edge, string* err) {
 
   // Deps are invalid if the output is newer than the deps.
   if (output->mtime() > deps->mtime) {
-    EXPLAIN("stored deps info out of date for '%s' (%d vs %d)",
-            output->path().c_str(), deps->mtime, output->mtime());
+    EXPLAIN("stored deps info out of date for '%s' (%lld vs %lld)",
+            output->path().c_str(), static_cast<long long int>(deps->mtime), static_cast<long long int>(output->mtime()));
     return false;
   }
 

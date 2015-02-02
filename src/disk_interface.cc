@@ -190,7 +190,7 @@ TimeStamp RealDiskInterface::Stat(const string& path, string* err) const {
     *err = "stat(" + path + "): " + strerror(errno);
     return -1;
   }
-  return st.st_mtime;
+  return static_cast<int64_t>(st.st_mtime) * 1000000000 + st.st_mtim.tv_nsec;
 #endif
 }
 

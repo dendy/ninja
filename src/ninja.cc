@@ -494,8 +494,8 @@ int NinjaMain::ToolDeps(int argc, char** argv) {
     TimeStamp mtime = disk_interface.Stat((*it)->path(), &err);
     if (mtime == -1)
       Error("%s", err.c_str());  // Log and ignore Stat() errors;
-    printf("%s: #deps %d, deps mtime %d (%s)\n",
-           (*it)->path().c_str(), deps->node_count, deps->mtime,
+    printf("%s: #deps %d, deps mtime %lld (%s)\n",
+           (*it)->path().c_str(), deps->node_count, static_cast<long long int>(deps->mtime),
            (!mtime || mtime > deps->mtime ? "STALE":"VALID"));
     for (int i = 0; i < deps->node_count; ++i)
       printf("    %s\n", deps->nodes[i]->path().c_str());
