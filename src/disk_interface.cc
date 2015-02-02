@@ -66,6 +66,8 @@ TimeStamp TimeStampFromFileTime(const FILETIME& filetime) {
     ((uint64_t)filetime.dwLowDateTime);
   mtime /= 1000000000LL / 100; // 100ns -> s.
   mtime -= 12622770400LL;  // 1600 epoch -> 2000 epoch (subtract 400 years).
+  mtime *= 1000000000LL; // convert to nsecs
+  mtime += 100LL * (filetime.dwLowDateTime % 10000000LL);
   return (TimeStamp)mtime;
 }
 
@@ -192,7 +194,13 @@ TimeStamp RealDiskInterface::Stat(const string& path, string* err) const {
   // that it doesn't exist.
   if (st.st_mtime == 0)
     return 1;
-  return st.st_mtime;
+  const int64_t nsec =
+#ifdef __APPLE__
+      st.st_mtimespec.tv_nsec;
+#else
+      st.st_mtim.tv_nsec;
+#endif
+  return static_cast<long long int>(st.st_mtime) * 1000000000 + nsec;
 #endif
 }
 
