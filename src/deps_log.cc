@@ -124,7 +124,7 @@ bool DepsLog::RecordDeps(Node* node, TimeStamp mtime,
     return true;
 
   // Update on-disk representation.
-  unsigned size = 4 * (1 + 1 + node_count);
+  unsigned size = 4 * (1 + sizeof(TimeStamp)/sizeof(int) + node_count);
   if (size > kMaxRecordSize) {
     errno = ERANGE;
     return false;
@@ -135,8 +135,8 @@ bool DepsLog::RecordDeps(Node* node, TimeStamp mtime,
   int id = node->id();
   if (fwrite(&id, 4, 1, file_) < 1)
     return false;
-  int timestamp = mtime;
-  if (fwrite(&timestamp, 4, 1, file_) < 1)
+  TimeStamp timestamp = mtime;
+  if (fwrite(&timestamp, sizeof(timestamp), 1, file_) < 1)
     return false;
   for (int i = 0; i < node_count; ++i) {
     id = nodes[i]->id();
@@ -218,9 +218,10 @@ bool DepsLog::Load(const string& path, State* state, string* err) {
       assert(size % 4 == 0);
       int* deps_data = reinterpret_cast<int*>(buf);
       int out_id = deps_data[0];
-      int mtime = deps_data[1];
-      deps_data += 2;
-      int deps_count = (size / 4) - 2;
+      TimeStamp mtime = *reinterpret_cast<TimeStamp*>(deps_data + 1);
+      const int headerSize = 1 + sizeof(TimeStamp)/sizeof(int);
+      deps_data += headerSize;
+      int deps_count = (size / 4) - headerSize;
 
       Deps* deps = new Deps(mtime, deps_count);
       for (int i = 0; i < deps_count; ++i) {
