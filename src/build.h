@@ -144,8 +144,10 @@ struct CommandRunner {
   struct Result {
     Result() : edge(NULL) {}
     Edge* edge;
+    bool use_stderr;
     ExitStatus status;
     std::string output;
+    std::string error;
     bool success() const { return status == ExitSuccess; }
   };
   /// Wait for a command to complete, or return false if interrupted.
@@ -241,6 +243,7 @@ struct BuildStatus {
   void PlanHasTotalEdges(int total);
   void BuildEdgeStarted(const Edge* edge);
   void BuildEdgeFinished(Edge* edge, bool success, const std::string& output,
+                         const std::string& error,
                          int* start_time, int* end_time);
   void BuildLoadDyndeps();
   void BuildStarted();
@@ -275,6 +278,7 @@ struct BuildStatus {
 
   /// Prints progress output.
   LinePrinter printer_;
+  LinePrinter err_printer_;
 
   /// The custom progress status format to use.
   const char* progress_status_format_;

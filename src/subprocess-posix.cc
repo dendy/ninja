@@ -36,13 +36,16 @@ extern char** environ;
 
 using namespace std;
 
-Subprocess::Subprocess(bool use_console) : fd_(-1), pid_(-1),
-                                           use_console_(use_console) {
+Subprocess::Subprocess(bool use_console, bool use_stderr) : pid_(-1),
+                                                            use_console_(use_console),
+                                                            use_stderr_(use_stderr) {
 }
 
 Subprocess::~Subprocess() {
-  if (fd_ >= 0)
-    close(fd_);
+  if (out_.fd >= 0)
+    close(out_.fd);
+  if (err_.fd >= 0)
+    close(err_.fd);
   // Reap child if forgotten.
   if (pid_ != -1)
     Finish();
@@ -52,14 +55,26 @@ bool Subprocess::Start(SubprocessSet* set, const string& command) {
   int output_pipe[2];
   if (pipe(output_pipe) < 0)
     Fatal("pipe: %s", strerror(errno));
-  fd_ = output_pipe[0];
+  out_.fd = output_pipe[0];
+
+  int error_pipe[2];
+  if (use_stderr_) {
+    if (pipe(error_pipe) < 0)
+      Fatal("error pipe: %s", strerror(errno));
+    err_.fd = error_pipe[0];
+  }
+
 #if !defined(USE_PPOLL)
   // If available, we use ppoll in DoWork(); otherwise we use pselect
   // and so must avoid overly-large FDs.
-  if (fd_ >= static_cast<int>(FD_SETSIZE))
+  if (out_.fd >= static_cast<int>(FD_SETSIZE))
     Fatal("pipe: %s", strerror(EMFILE));
+  if (use_stderr_ && err_.fd >= static_cast<int>(FD_SETSIZE))
+    Fatal("error pipe: %s", strerror(EMFILE));
 #endif  // !USE_PPOLL
-  SetCloseOnExec(fd_);
+  SetCloseOnExec(out_.fd);
+  if (use_stderr_)
+    SetCloseOnExec(err_.fd);
 
   posix_spawn_file_actions_t action;
   int err = posix_spawn_file_actions_init(&action);
@@ -69,6 +84,11 @@ bool Subprocess::Start(SubprocessSet* set, const string& command) {
   err = posix_spawn_file_actions_addclose(&action, output_pipe[0]);
   if (err != 0)
     Fatal("posix_spawn_file_actions_addclose: %s", strerror(err));
+
+  if (use_stderr_) {
+    if (posix_spawn_file_actions_addclose(&action, error_pipe[0]) != 0)
+      Fatal("posix_spawn_file_actions_addclose: %s", strerror(errno));
+  }
 
   posix_spawnattr_t attr;
   err = posix_spawnattr_init(&attr);
@@ -100,12 +120,18 @@ bool Subprocess::Start(SubprocessSet* set, const string& command) {
     err = posix_spawn_file_actions_adddup2(&action, output_pipe[1], 1);
     if (err != 0)
       Fatal("posix_spawn_file_actions_adddup2: %s", strerror(err));
-    err = posix_spawn_file_actions_adddup2(&action, output_pipe[1], 2);
+    err = posix_spawn_file_actions_adddup2(&action, use_stderr_ ?
+                                           error_pipe[1] : output_pipe[1], 2);
     if (err != 0)
       Fatal("posix_spawn_file_actions_adddup2: %s", strerror(err));
     err = posix_spawn_file_actions_addclose(&action, output_pipe[1]);
     if (err != 0)
       Fatal("posix_spawn_file_actions_addclose: %s", strerror(err));
+    if (use_stderr_) {
+      err = posix_spawn_file_actions_addclose(&action, error_pipe[1]);
+      if (err != 0)
+        Fatal("posix_spawn_file_actions_addclose: %s", strerror(err));
+    }
     // In the console case, output_pipe is still inherited by the child and
     // closed when the subprocess finishes, which then notifies ninja.
   }
@@ -131,19 +157,21 @@ bool Subprocess::Start(SubprocessSet* set, const string& command) {
     Fatal("posix_spawn_file_actions_destroy: %s", strerror(err));
 
   close(output_pipe[1]);
+  if (use_stderr_)
+    close(error_pipe[1]);
   return true;
 }
 
-void Subprocess::OnPipeReady() {
+void Subprocess::OnPipeReady(Pipe & pipe) {
   char buf[4 << 10];
-  ssize_t len = read(fd_, buf, sizeof(buf));
+  ssize_t len = read(pipe.fd, buf, sizeof(buf));
   if (len > 0) {
-    buf_.append(buf, len);
+    pipe.buf.append(buf, static_cast<size_t>(len));
   } else {
     if (len < 0)
       Fatal("read: %s", strerror(errno));
-    close(fd_);
-    fd_ = -1;
+    close(pipe.fd);
+    pipe.fd = -1;
   }
 }
 
@@ -177,11 +205,15 @@ ExitStatus Subprocess::Finish() {
 }
 
 bool Subprocess::Done() const {
-  return fd_ == -1;
+  return out_.fd == -1 && err_.fd == -1;
 }
 
 const string& Subprocess::GetOutput() const {
-  return buf_;
+  return out_.buf;
+}
+
+const string& Subprocess::GetError() const {
+  return err_.buf;
 }
 
 int SubprocessSet::interrupted_;
@@ -238,8 +270,8 @@ SubprocessSet::~SubprocessSet() {
     Fatal("sigprocmask: %s", strerror(errno));
 }
 
-Subprocess *SubprocessSet::Add(const string& command, bool use_console) {
-  Subprocess *subprocess = new Subprocess(use_console);
+Subprocess *SubprocessSet::Add(const string& command, bool use_console, bool use_stderr) {
+  Subprocess *subprocess = new Subprocess(use_console, use_stderr);
   if (!subprocess->Start(this, command)) {
     delete subprocess;
     return 0;
@@ -255,12 +287,15 @@ bool SubprocessSet::DoWork() {
 
   for (vector<Subprocess*>::iterator i = running_.begin();
        i != running_.end(); ++i) {
-    int fd = (*i)->fd_;
-    if (fd < 0)
-      continue;
-    pollfd pfd = { fd, POLLIN | POLLPRI, 0 };
-    fds.push_back(pfd);
-    ++nfds;
+    Subprocess::Pipe* const pipes[2] = { &(*i)->out_, &(*i)->err_ };
+    for (int pipe_i = 0; pipe_i < 2; ++pipe_i) {
+      const Subprocess::Pipe& pipe = *pipes[pipe_i];
+      if (pipe.fd >= 0) {
+        pollfd pfd = { pipe.fd, POLLIN | POLLPRI, 0 };
+        fds.push_back(pfd);
+        ++nfds;
+      }
+    }
   }
 
   interrupted_ = 0;
@@ -280,12 +315,15 @@ bool SubprocessSet::DoWork() {
   nfds_t cur_nfd = 0;
   for (vector<Subprocess*>::iterator i = running_.begin();
        i != running_.end(); ++i) {
-    int fd = (*i)->fd_;
-    if (fd < 0)
-      continue;
-    assert(fd == fds[cur_nfd].fd);
-    if (fds[cur_nfd++].revents)
-      (*i)->OnPipeReady();
+    Subprocess::Pipe * const pipes[2] = { &(*i)->out_, &(*i)->err_ };
+    for (int pipe_i = 0; pipe_i < 2; ++pipe_i) {
+      Subprocess::Pipe& pipe = *pipes[pipe_i];
+      if (pipe.fd >= 0) {
+        assert(pipe.fd == fds[cur_nfd].fd);
+        if (fds[cur_nfd++].revents)
+          (*i)->OnPipeReady(pipe);
+      }
+    }
   }
 
   for (vector<Subprocess*>::iterator i = running_.begin();
@@ -309,11 +347,15 @@ bool SubprocessSet::DoWork() {
 
   for (vector<Subprocess*>::iterator i = running_.begin();
        i != running_.end(); ++i) {
-    int fd = (*i)->fd_;
-    if (fd >= 0) {
-      FD_SET(fd, &set);
-      if (nfds < fd+1)
-        nfds = fd+1;
+    assert(!(*i)->Done());
+    Subprocess::Pipe * const pipes[2] = { &(*i)->out_, &(*i)->err_ };
+    for (int pipeIndex = 0; pipeIndex < 2; ++pipeIndex) {
+      Subprocess::Pipe & pipe = *pipes[pipeIndex];
+      if (pipe.fd >= 0) {
+        FD_SET(pipe.fd, &set);
+        if (nfds < pipe.fd+1)
+          nfds = pipe.fd+1;
+        }
     }
   }
 
@@ -333,14 +375,18 @@ bool SubprocessSet::DoWork() {
 
   for (vector<Subprocess*>::iterator i = running_.begin();
        i != running_.end(); ) {
-    int fd = (*i)->fd_;
-    if (fd >= 0 && FD_ISSET(fd, &set)) {
-      (*i)->OnPipeReady();
-      if ((*i)->Done()) {
-        finished_.push(*i);
-        i = running_.erase(i);
-        continue;
+    assert(!(*i)->Done());
+    Subprocess::Pipe * const pipes[2] = { &(*i)->out_, &(*i)->err_ };
+    for (int pipeIndex = 0; pipeIndex < 2; ++pipeIndex) {
+      Subprocess::Pipe & pipe = *pipes[pipeIndex];
+      if (pipe.fd >= 0 && FD_ISSET(pipe.fd, &set)) {
+        (*i)->OnPipeReady(pipe);
       }
+    }
+    if ((*i)->Done()) {
+      finished_.push(*i);
+      i = running_.erase(i);
+      continue;
     }
     ++i;
   }

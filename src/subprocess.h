@@ -46,32 +46,47 @@ struct Subprocess {
   /// the process was interrupted, ExitFailure if it otherwise failed.
   ExitStatus Finish();
 
+  bool UseStdErr() const { return use_stderr_; }
   bool Done() const;
 
   const std::string& GetOutput() const;
+  const std::string& GetError() const;
 
  private:
-  Subprocess(bool use_console);
+  Subprocess(bool use_console, bool use_stderr);
   bool Start(struct SubprocessSet* set, const std::string& command);
-  void OnPipeReady();
-
-  std::string buf_;
 
 #ifdef _WIN32
+  struct Pipe {
+    HANDLE handle = NULL;
+    OVERLAPPED overlapped{};
+    char overlapped_buf[4 << 10];
+    bool is_reading = false;
+    Subprocess * subprocess;
+    std::string buf;
+  };
+
   /// Set up pipe_ as the parent-side pipe of the subprocess; return the
   /// other end of the pipe, usable in the child process.
-  HANDLE SetupPipe(HANDLE ioport);
+  HANDLE SetupPipe(HANDLE ioport, Pipe & pipe, bool out);
 
   HANDLE child_;
-  HANDLE pipe_;
-  OVERLAPPED overlapped_;
-  char overlapped_buf_[4 << 10];
-  bool is_reading_;
+  Pipe out_, err_;
+  void OnPipeReady(Pipe & pipe);
 #else
-  int fd_;
+  struct Pipe {
+    Pipe() : fd(-1) {}
+    int fd;
+    std::string buf;
+  };
+
+  void OnPipeReady(Pipe & pipe);
+
+  Pipe out_, err_;
   pid_t pid_;
 #endif
   bool use_console_;
+  bool use_stderr_;
 
   friend struct SubprocessSet;
 };
@@ -83,7 +98,7 @@ struct SubprocessSet {
   SubprocessSet();
   ~SubprocessSet();
 
-  Subprocess* Add(const std::string& command, bool use_console = false);
+  Subprocess* Add(const std::string& command, bool use_console = false, bool use_stderr = false);
   bool DoWork();
   Subprocess* NextFinished();
   void Clear();

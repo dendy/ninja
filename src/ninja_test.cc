@@ -42,7 +42,7 @@ struct RegisteredTest {
 static RegisteredTest tests[10000];
 testing::Test* g_current_test;
 static int ntests;
-static LinePrinter printer;
+static LinePrinter printer(true);
 
 void RegisterTest(testing::Test* (*factory)(), const char* name) {
   tests[ntests].factory = factory;

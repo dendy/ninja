@@ -80,8 +80,8 @@ bool DryRunCommandRunner::WaitForCommand(Result* result) {
 
 BuildStatus::BuildStatus(const BuildConfig& config)
     : config_(config), start_time_millis_(GetTimeMillis()), started_edges_(0),
-      finished_edges_(0), total_edges_(0), progress_status_format_(NULL),
-      current_rate_(config.parallelism) {
+      finished_edges_(0), total_edges_(0), printer_(true), err_printer_(false),
+      progress_status_format_(NULL), current_rate_(config.parallelism) {
   // Don't do anything fancy in verbose mode.
   if (config_.verbosity != BuildConfig::NORMAL)
     printer_.set_smart_terminal(false);
@@ -104,13 +104,16 @@ void BuildStatus::BuildEdgeStarted(const Edge* edge) {
   if (edge->use_console() || printer_.is_smart_terminal())
     PrintStatus(edge, kEdgeStarted);
 
-  if (edge->use_console())
+  if (edge->use_console()) {
     printer_.SetConsoleLocked(true);
+    err_printer_.SetConsoleLocked(true);
+  }
 }
 
 void BuildStatus::BuildEdgeFinished(Edge* edge,
                                     bool success,
                                     const string& output,
+                                    const string& error,
                                     int* start_time,
                                     int* end_time) {
   int64_t now = GetTimeMillis();
@@ -122,8 +125,10 @@ void BuildStatus::BuildEdgeFinished(Edge* edge,
   *end_time = (int)(now - start_time_millis_);
   running_edges_.erase(i);
 
-  if (edge->use_console())
+  if (edge->use_console()) {
     printer_.SetConsoleLocked(false);
+    err_printer_.SetConsoleLocked(false);
+  }
 
   if (config_.verbosity == BuildConfig::QUIET)
     return;
@@ -138,12 +143,14 @@ void BuildStatus::BuildEdgeFinished(Edge* edge,
          o != edge->outputs_.end(); ++o)
       outputs += (*o)->path() + " ";
 
-    if (printer_.supports_color()) {
-        printer_.PrintOnNewLine("\x1B[31m" "FAILED: " "\x1B[0m" + outputs + "\n");
+    printer_.CompleteLine();
+
+    if (err_printer_.supports_color()) {
+        err_printer_.PrintOnNewLine("\x1B[31m" "FAILED: " "\x1B[0m" + outputs + "\n");
     } else {
-        printer_.PrintOnNewLine("FAILED: " + outputs + "\n");
+        err_printer_.PrintOnNewLine("FAILED: " + outputs + "\n");
     }
-    printer_.PrintOnNewLine(edge->EvaluateCommand() + "\n");
+    err_printer_.PrintOnNewLine(edge->EvaluateCommand() + "\n");
   }
 
   if (!output.empty()) {
@@ -174,6 +181,22 @@ void BuildStatus::BuildEdgeFinished(Edge* edge,
 #ifdef _WIN32
     _setmode(_fileno(stdout), _O_TEXT);  // End Windows extra CR fix
 #endif
+  }
+
+  if (!error.empty()) {
+    string::size_type begin = 0;
+    while (true) {
+      const std::string::size_type crpos = error.find('\xd', begin);
+      if (crpos == string::npos) {
+        fwrite(error.c_str() + begin, error.size() - begin, 1, stderr);
+        break;
+      }
+      const std::string::size_type size = crpos - begin;
+      if (size != 0)
+        fwrite(error.c_str() + begin, crpos - begin, 1, stderr);
+      begin = crpos + 1;
+    }
+    fflush(stderr);
   }
 }
 
@@ -700,7 +723,7 @@ bool RealCommandRunner::CanRunMore() const {
 
 bool RealCommandRunner::StartCommand(Edge* edge) {
   string command = edge->EvaluateCommand();
-  Subprocess* subproc = subprocs_.Add(command, edge->use_console());
+  Subprocess* subproc = subprocs_.Add(command, edge->use_console(), edge->use_stderr());
   if (!subproc)
     return false;
   subproc_to_edge_.insert(make_pair(subproc, edge));
@@ -716,8 +739,10 @@ bool RealCommandRunner::WaitForCommand(Result* result) {
       return false;
   }
 
+  result->use_stderr = subproc->UseStdErr();
   result->status = subproc->Finish();
   result->output = subproc->GetOutput();
+  result->error = subproc->GetError();
 
   map<const Subprocess*, Edge*>::iterator e = subproc_to_edge_.find(subproc);
   result->edge = e->second;
@@ -952,13 +977,16 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
         result->success()) {
       if (!result->output.empty())
         result->output.append("\n");
-      result->output.append(extract_err);
+      if (!result->error.empty())
+        result->error.append("\n");
+      (result->use_stderr ? result->error : result->output).append(extract_err);
       result->status = ExitFailure;
     }
   }
 
   int start_time, end_time;
   status_->BuildEdgeFinished(edge, result->success(), result->output,
+                             result->error,
                              &start_time, &end_time);
 
   // The rest of this function only applies to successful commands.

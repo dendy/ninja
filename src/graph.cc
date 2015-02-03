@@ -461,6 +461,17 @@ bool Edge::use_console() const {
   return pool() == &State::kConsolePool;
 }
 
+static bool s_use_stderr()
+{
+    const char * const use_string = getenv("NINJA_USE_STDERR");
+    return !use_string || strcmp(use_string, "0") != 0;
+}
+
+bool Edge::use_stderr() const {
+    static const bool use = s_use_stderr();
+    return use;
+}
+
 bool Edge::maybe_phonycycle_diagnostic() const {
   // CMake 2.8.12.x and 3.0.x produced self-referencing phony rules
   // of the form "build a: phony ... a ...".   Restrict our
