@@ -643,7 +643,7 @@ size_t RealCommandRunner::CanRunMore() const {
 
 bool RealCommandRunner::StartCommand(Edge* edge) {
   string command = edge->EvaluateCommand();
-  Subprocess* subproc = subprocs_.Add(command, edge->use_console());
+  Subprocess* subproc = subprocs_.Add(command, edge->use_console(), edge->use_stderr());
   if (!subproc)
     return false;
   subproc_to_edge_.insert(make_pair(subproc, edge));
@@ -659,8 +659,10 @@ bool RealCommandRunner::WaitForCommand(Result* result) {
       return false;
   }
 
+  result->use_stderr = subproc->UseStdErr();
   result->status = subproc->Finish();
   result->output = subproc->GetOutput();
+  result->error = subproc->GetError();
 
   map<const Subprocess*, Edge*>::iterator e = subproc_to_edge_.find(subproc);
   result->edge = e->second;
@@ -944,7 +946,9 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
         result->success()) {
       if (!result->output.empty())
         result->output.append("\n");
-      result->output.append(extract_err);
+      if (!result->error.empty())
+        result->error.append("\n");
+      (result->use_stderr ? result->error : result->output).append(extract_err);
       result->status = ExitFailure;
     }
   }
@@ -956,7 +960,7 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
   running_edges_.erase(it);
 
   status_->BuildEdgeFinished(edge, start_time_millis, end_time_millis,
-                             result->success(), result->output);
+                             result->success(), result->output, result->error);
 
   // The rest of this function only applies to successful commands.
   if (!result->success()) {

@@ -264,6 +264,7 @@ struct Edge {
 
   bool is_phony() const;
   bool use_console() const;
+  bool use_stderr() const;
   bool maybe_phonycycle_diagnostic() const;
 
   // Historical info: how long did this edge take last time,

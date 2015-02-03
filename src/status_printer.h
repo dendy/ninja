@@ -32,7 +32,7 @@ struct StatusPrinter : Status {
   virtual void BuildEdgeStarted(const Edge* edge, int64_t start_time_millis);
   virtual void BuildEdgeFinished(Edge* edge, int64_t start_time_millis,
                                  int64_t end_time_millis, bool success,
-                                 const std::string& output);
+                                 const std::string& output, const std::string& error);
   virtual void BuildStarted();
   virtual void BuildFinished();
 
@@ -88,6 +88,7 @@ struct StatusPrinter : Status {
 
   /// Prints progress output.
   LinePrinter printer_;
+  LinePrinter err_printer_;
 
   /// An optional Explanations pointer, used to implement `-d explain`.
   Explanations* explanations_ = nullptr;

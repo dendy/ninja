@@ -42,7 +42,7 @@ Status* Status::factory(const BuildConfig& config) {
 
 StatusPrinter::StatusPrinter(const BuildConfig& config)
     : config_(config), started_edges_(0), finished_edges_(0), total_edges_(0),
-      running_edges_(0), progress_status_format_(NULL),
+      running_edges_(0), printer_(true), err_printer_(false), progress_status_format_(NULL),
       current_rate_(config.parallelism) {
   // Don't do anything fancy in verbose mode.
   if (config_.verbosity != BuildConfig::NORMAL)
@@ -90,8 +90,10 @@ void StatusPrinter::BuildEdgeStarted(const Edge* edge,
   if (edge->use_console() || printer_.is_smart_terminal())
     PrintStatus(edge, start_time_millis);
 
-  if (edge->use_console())
+  if (edge->use_console()) {
     printer_.SetConsoleLocked(true);
+    err_printer_.SetConsoleLocked(true);
+  }
 }
 
 void StatusPrinter::RecalculateProgressPrediction() {
@@ -175,7 +177,7 @@ void StatusPrinter::RecalculateProgressPrediction() {
 
 void StatusPrinter::BuildEdgeFinished(Edge* edge, int64_t start_time_millis,
                                       int64_t end_time_millis, bool success,
-                                      const string& output) {
+                                      const string& output, const std::string& error) {
   time_millis_ = end_time_millis;
   ++finished_edges_;
 
@@ -190,8 +192,10 @@ void StatusPrinter::BuildEdgeFinished(Edge* edge, int64_t start_time_millis,
   } else
     --eta_unpredictable_edges_remaining_;
 
-  if (edge->use_console())
+  if (edge->use_console()) {
     printer_.SetConsoleLocked(false);
+    err_printer_.SetConsoleLocked(false);
+  }
 
   if (config_.verbosity == BuildConfig::QUIET)
     return;
@@ -208,12 +212,14 @@ void StatusPrinter::BuildEdgeFinished(Edge* edge, int64_t start_time_millis,
          o != edge->outputs_.end(); ++o)
       outputs += (*o)->path() + " ";
 
-    if (printer_.supports_color()) {
-        printer_.PrintOnNewLine("\x1B[31m" "FAILED: " "\x1B[0m" + outputs + "\n");
+    printer_.CompleteLine();
+
+    if (err_printer_.supports_color()) {
+        err_printer_.PrintOnNewLine("\x1B[31m" "FAILED: " "\x1B[0m" + outputs + "\n");
     } else {
-        printer_.PrintOnNewLine("FAILED: " + outputs + "\n");
+        err_printer_.PrintOnNewLine("FAILED: " + outputs + "\n");
     }
-    printer_.PrintOnNewLine(edge->EvaluateCommand() + "\n");
+    err_printer_.PrintOnNewLine(edge->EvaluateCommand() + "\n");
   }
 
   if (!output.empty()) {
@@ -246,6 +252,22 @@ void StatusPrinter::BuildEdgeFinished(Edge* edge, int64_t start_time_millis,
     fflush(stdout);
     _setmode(_fileno(stdout), _O_TEXT);  // End Windows extra CR fix
 #endif
+  }
+
+  if (!error.empty()) {
+    string::size_type begin = 0;
+    while (true) {
+      const std::string::size_type crpos = error.find('\xd', begin);
+      if (crpos == string::npos) {
+        fwrite(error.c_str() + begin, error.size() - begin, 1, stderr);
+        break;
+      }
+      const std::string::size_type size = crpos - begin;
+      if (size != 0)
+        fwrite(error.c_str() + begin, crpos - begin, 1, stderr);
+      begin = crpos + 1;
+    }
+    fflush(stderr);
   }
 }
 
