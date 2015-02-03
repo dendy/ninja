@@ -279,20 +279,23 @@ bool SubprocessSet::DoWork() {
 
   nfds_t cur_nfd = 0;
   for (vector<Subprocess*>::iterator i = running_.begin();
-       i != running_.end(); ) {
+       i != running_.end(); ++i) {
     int fd = (*i)->fd_;
     if (fd < 0)
       continue;
     assert(fd == fds[cur_nfd].fd);
-    if (fds[cur_nfd++].revents) {
+    if (fds[cur_nfd++].revents)
       (*i)->OnPipeReady();
-      if ((*i)->Done()) {
-        finished_.push(*i);
-        i = running_.erase(i);
-        continue;
-      }
+  }
+
+  for (vector<Subprocess*>::iterator i = running_.begin();
+       i != running_.end(); ) {
+    if ((*i)->Done()) {
+      finished_.push(*i);
+      i = running_.erase(i);
+    } else {
+      ++i;
     }
-    ++i;
   }
 
   return IsInterrupted();
