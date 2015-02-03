@@ -25,13 +25,16 @@
 
 #include "util.h"
 
-Subprocess::Subprocess(bool use_console) : fd_(-1), pid_(-1),
-                                           use_console_(use_console) {
+Subprocess::Subprocess(bool use_console, bool use_segmented_output) : fd_(-1), errFd_(-1), bufferFd_(-1), pid_(-1),
+                                           use_console_(use_console),
+                                           use_segmented_output_(use_segmented_output) {
 }
 
 Subprocess::~Subprocess() {
   if (fd_ >= 0)
     close(fd_);
+  if (errFd_ >= 0)
+    close(errFd_);
   // Reap child if forgotten.
   if (pid_ != -1)
     Finish();
@@ -42,13 +45,25 @@ bool Subprocess::Start(SubprocessSet* set, const string& command) {
   if (pipe(output_pipe) < 0)
     Fatal("pipe: %s", strerror(errno));
   fd_ = output_pipe[0];
+
+  int err_output_pipe[2];
+  if (use_segmented_output_) {
+    if (pipe(err_output_pipe) < 0)
+      Fatal("error pipe: %s", strerror(errno));
+    errFd_ = err_output_pipe[0];
+  }
+
 #if !defined(USE_PPOLL)
   // If available, we use ppoll in DoWork(); otherwise we use pselect
   // and so must avoid overly-large FDs.
   if (fd_ >= static_cast<int>(FD_SETSIZE))
     Fatal("pipe: %s", strerror(EMFILE));
+  if (use_segmented_output_ && errFd_ >= static_cast<int>(FD_SETSIZE))
+    Fatal("error pipe: %s", strerror(EMFILE));
 #endif  // !USE_PPOLL
   SetCloseOnExec(fd_);
+  if (use_segmented_output_)
+    SetCloseOnExec(errFd_);
 
   pid_ = fork();
   if (pid_ < 0)
@@ -56,9 +71,11 @@ bool Subprocess::Start(SubprocessSet* set, const string& command) {
 
   if (pid_ == 0) {
     close(output_pipe[0]);
+    if (use_segmented_output_)
+      close(err_output_pipe[0]);
 
     // Track which fd we use to report errors on.
-    int error_pipe = output_pipe[1];
+    int error_pipe = use_segmented_output_ ? err_output_pipe[1] : output_pipe[1];
     do {
       if (sigaction(SIGINT, &set->old_int_act_, 0) < 0)
         break;
@@ -85,13 +102,16 @@ bool Subprocess::Start(SubprocessSet* set, const string& command) {
           break;
         close(devnull);
 
-        if (dup2(output_pipe[1], 1) < 0 ||
-            dup2(output_pipe[1], 2) < 0)
+        if (dup2(output_pipe[1], 1) < 0)
+          break;
+        if (dup2(use_segmented_output_ ? err_output_pipe[1] : output_pipe[1], 2) < 0)
           break;
 
         // Now can use stderr for errors.
         error_pipe = 2;
         close(output_pipe[1]);
+        if (use_segmented_output_)
+          close(err_output_pipe[1]);
       }
       // In the console case, output_pipe is still inherited by the child and
       // closed when the subprocess finishes, which then notifies ninja.
@@ -110,19 +130,40 @@ bool Subprocess::Start(SubprocessSet* set, const string& command) {
   }
 
   close(output_pipe[1]);
+  if (use_segmented_output_)
+    close(err_output_pipe[1]);
   return true;
 }
 
-void Subprocess::OnPipeReady() {
+bool Subprocess::OnPipeReady(int fd) {
   char buf[4 << 10];
-  ssize_t len = read(fd_, buf, sizeof(buf));
+  ssize_t len = read(fd, buf, sizeof(buf));
+  if (use_segmented_output_ && fd != bufferFd_) {
+    if (bufferFd_ != -1) {
+      FILE * f = bufferFd_ == fd_ ? stdout : stderr;
+      fprintf(f, buf_.c_str());
+      fflush(f);
+      buf_.clear();
+      bufferFd_ = -1;
+    }
+  }
   if (len > 0) {
+    bufferFd_ = fd;
     buf_.append(buf, len);
+    return true;
   } else {
     if (len < 0)
       Fatal("read: %s", strerror(errno));
-    close(fd_);
-    fd_ = -1;
+    return false;
+  }
+}
+
+void Subprocess::ClosePipes() {
+  close(fd_);
+  fd_ = -1;
+  if (use_segmented_output_) {
+    close(errFd_);
+    errFd_ = -1;
   }
 }
 
@@ -207,8 +248,8 @@ SubprocessSet::~SubprocessSet() {
     Fatal("sigprocmask: %s", strerror(errno));
 }
 
-Subprocess *SubprocessSet::Add(const string& command, bool use_console) {
-  Subprocess *subprocess = new Subprocess(use_console);
+Subprocess *SubprocessSet::Add(const string& command, bool use_console, bool use_segmented_output) {
+  Subprocess *subprocess = new Subprocess(use_console, use_segmented_output);
   if (!subprocess->Start(this, command)) {
     delete subprocess;
     return 0;
@@ -230,6 +271,11 @@ bool SubprocessSet::DoWork() {
     pollfd pfd = { fd, POLLIN | POLLPRI, 0 };
     fds.push_back(pfd);
     ++nfds;
+    if ((*i)->use_segmented_output_) {
+      pollfd pfd = { (*i)->errFd_, POLLIN | POLLPRI, 0 };
+      fds.push_back(pfd);
+      ++nfds;
+    }
   }
 
   interrupted_ = 0;
@@ -253,8 +299,19 @@ bool SubprocessSet::DoWork() {
     if (fd < 0)
       continue;
     assert(fd == fds[cur_nfd].fd);
+    bool pipeError = false;
     if (fds[cur_nfd++].revents)
-      (*i)->OnPipeReady();
+      if (!(*i)->OnPipeReady(fd))
+        pipeError = true;
+    if ((*i)->use_segmented_output_) {
+      int fd = (*i)->errFd_;
+      assert(fd == fds[cur_nfd].fd);
+      if (fds[cur_nfd++].revents)
+        if (!(*i)->OnPipeReady(fd))
+          pipeError = true;
+    }
+    if (pipeError)
+      (*i)->ClosePipes();
   }
 
   for (vector<Subprocess*>::iterator i = running_.begin();
