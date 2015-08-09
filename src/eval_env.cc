@@ -73,7 +73,7 @@ bool Rule::IsReservedBinding(const string& var) {
       var == "rspfile" ||
       var == "rspfile_content" ||
       var == "msvc_deps_prefix" ||
-      var == "segmented_output";
+      var == "combined_output";
 }
 
 const map<string, const Rule*>& BindingEnv::GetRules() const {
