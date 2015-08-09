@@ -136,9 +136,10 @@ bool Subprocess::Start(SubprocessSet* set, const string& command) {
 }
 
 bool Subprocess::OnPipeReady(int fd) {
+  const bool write_instantly = true;
   char buf[4 << 10];
   ssize_t len = read(fd, buf, sizeof(buf));
-  if (use_segmented_output_ && fd != bufferFd_) {
+  if (use_segmented_output_ && fd != bufferFd_ && !write_instantly) {
     if (bufferFd_ != -1) {
       FILE * f = bufferFd_ == fd_ ? stdout : stderr;
       fprintf(f, buf_.c_str());
@@ -148,8 +149,14 @@ bool Subprocess::OnPipeReady(int fd) {
     }
   }
   if (len > 0) {
-    bufferFd_ = fd;
-    buf_.append(buf, len);
+    if (write_instantly) {
+      FILE * f = fd == fd_ ? stdout : stderr;
+      fwrite(buf, 1, len, f);
+      fflush(f);
+    } else {
+      bufferFd_ = fd;
+      buf_.append(buf, len);
+    }
     return true;
   } else {
     if (len < 0)
