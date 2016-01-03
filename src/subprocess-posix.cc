@@ -42,13 +42,13 @@ Subprocess::~Subprocess() {
 
 bool Subprocess::Start(SubprocessSet* set, const string& command) {
   int output_pipe[2];
-  if (pipe(output_pipe) < 0)
+  if (pipe2(output_pipe, O_NONBLOCK) < 0)
     Fatal("pipe: %s", strerror(errno));
   fd_ = output_pipe[0];
 
   int err_output_pipe[2];
   if (use_segmented_output_) {
-    if (pipe(err_output_pipe) < 0)
+    if (pipe2(err_output_pipe, O_NONBLOCK) < 0)
       Fatal("error pipe: %s", strerror(errno));
     errFd_ = err_output_pipe[0];
   }
@@ -154,6 +154,8 @@ bool Subprocess::OnPipeReady(int fd) {
     char buf[4 << 10];
     ssize_t len = read(fd, buf, sizeof(buf));
     if (len < 0) {
+      if (errno == EWOULDBLOCK)
+          break;
       Fatal("read: %s", strerror(errno));
       return false;
     }
